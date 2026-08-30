@@ -1,0 +1,132 @@
+# deploy/docker-compose.yml
+# Config di deploy VERSIONATA della Agent Platform.
+#
+# Scopo primario: rendere PERSISTENTE la restart-policy (unless-stopped) — oggi
+# applicata a caldo con `docker update` (task 49bcf241) e quindi persa a ogni
+# `docker run`/redeploy — e aggiungere un healthcheck, così la piattaforma
+# riparte da sola dopo crash, OOM o reboot dell'host.
+# NB: perché riparta anche dopo un reboot serve `systemctl enable docker`
+# sull'host (vedi docs/deploy.md).
+#
+# Valori host CONFERMATI (docker ps + docker inspect su OpenClaw-server, 2026-07-27, task 0673d624):
+#   - PLATFORM_IMAGE          : agent-platform (.Config.Image = "agent-platform",
+#                               SENZA tag; Docker lo risolve implicitamente a
+#                               :latest). Ora buildabile dal repo via `build:`
+#                               sotto + Dockerfile alla radice (task fa880252,
+#                               follow-up di 0673d624 che aveva lasciato
+#                               l'immagine come buildata fuori dal repo).
+#   - PLATFORM_PORT / bind     : 127.0.0.1:18800 -> 3100 (PortBindings: bind SOLO
+#                               loopback perché davanti c'è nginx dockerproxy).
+#   - mem_limit / AGENT_PLATFORM_MEM_LIMIT_MB : 1536m (.HostConfig.Memory = 1536 MB).
+#                               Vanno tenuti ALLINEATI: l'admission-control usa
+#                               AGENT_PLATFORM_MEM_LIMIT_MB come tetto reale (OOM
+#                               cgroup = causa dominante run interrotte —
+#                               wiki: diagnosi-run-interrotte.md).
+# ⚠️ Restano PLACEHOLDER solo:
+#   - CLAUDE_CODE_OAUTH_TOKEN  : segreto (subscription Max). Va in deploy/.env, MAI committato.
+#   - autoheal image tag       : pinna un tag/digest in produzione (vedi sotto).
+
+services:
+  platform:
+    image: ${PLATFORM_IMAGE:-agent-platform}   # .Config.Image host confermato 2026-07-27 (senza tag)
+    # Buildabile dal repo (task fa880252, follow-up di 0673d624): senza questo
+    # `docker compose up` su un host pulito falliva (immagine assente, nessun
+    # Dockerfile nel repo). `image:` resta il default per riusare un'immagine
+    # già pubblicata/pinnata; `docker compose build` (o `up --build`) la
+    # ricostruisce dal Dockerfile alla radice del repo e la tagga come sopra.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: agent-platform
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "server/index.js"]
+    # Reaping degli zombie (task 019ab89d, diagnosi ab256fba §7). `command` avvia
+    # `node` come PID 1: i NIPOTI (git/esbuild/chrome-headless spawnati dal
+    # claude-cli) quando il loro padre muore vengono reparentati a PID 1, ma Node
+    # NON fa waitpid sui processi che non ha spawnato lui → restano <defunct>
+    # (decine osservate nella diagnosi). `init: true` inietta tini come PID 1
+    # (Node diventa suo figlio): tini reap-a i figli reparentati e inoltra i
+    # segnali. Fix standard, costo ~0, nessuna modifica al codice app.
+    init: true
+    ports:
+      # Bind loopback: davanti c'è nginx dockerproxy (host confermato 2026-07-27).
+      - "${PLATFORM_PORT:-127.0.0.1:18800}:3100"
+    environment:
+      NODE_ENV: production
+      PORT: "3100"
+      # Token subscription Max: obbligatorio, da deploy/.env. Fallisce esplicito se assente.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?serve il token subscription Max in deploy/.env}
+      # Allineato al mem_limit sotto (1536m) così l'admission-control conosce il tetto reale.
+      AGENT_PLATFORM_MEM_LIMIT_MB: "1536"
+      # Heap V8 esplicito: il default (~768MB) è la CAUSA dei crash "Reached
+      # heap limit" del 2026-08-29 (2 restart in 30 min sotto carico: executor
+      # + turni Architect + context-graph 67k nodi). 1280MB lascia ~256MB di
+      # margine al resto del processo dentro il cgroup da 1536m.
+      NODE_OPTIONS: "--max-old-space-size=1280"
+      OPENCLAW_GATEWAY_URL: ${OPENCLAW_GATEWAY_URL:-ws://host.docker.internal:18789}
+      OPENCLAW_GATEWAY_ORIGIN: ${OPENCLAW_GATEWAY_ORIGIN:-http://localhost:18789}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?serve il token Gateway OpenClaw}
+      OPENCLAW_WORKSPACE_DIR: /root/.openclaw/workspace
+      OPENCLAW_SESSIONS_DIR: /root/.openclaw/agents/main/sessions
+      CONTEXT_GRAPH_PATH: /app/server/data/context-graph/graph.json
+      # Ricerca web SOLA LETTURA per gli Architect V2 (task D1): chiave Tavily,
+      # stessa chiave gia' usata dal plugin tavily di OpenClaw. OPZIONALE: se
+      # vuota la capacita' resta spenta (webSearchAvailable() = false) e il
+      # blocco istruzioni non viene nemmeno messo nel prompt. web_fetch da solo
+      # non richiede chiave, ma senza search l'Architect non ha come trovare URL.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # Origine pubblica (dietro nginx/HTTPS): usata per gli URL delle preview
+      # pubblicate via publish_preview (task 9d1b6ebb). Se vuoto gli URL restano
+      # path assoluti "/preview/..." (apribili sull'origine dell'app).
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+    volumes:
+      # Stato runtime che DEVE sopravvivere al redeploy (tutto gitignorato):
+      - ../server/data:/app/server/data      # sessioni, task, wiki, runs, chiavi, uploads, history
+      - ../knowledge:/app/knowledge          # knowledge base per-tenant (runtime)
+      - ../repos:/app/repos                  # checkout di lavoro dei tenant
+      - ../backups:/app/backups              # backup piattaforma
+      # Config (tenants/users/model-tiers): montala se la gestisci fuori
+      # dall'immagine; commenta questa riga se è già baked nell'immagine.
+      - ../server/config:/app/server/config
+      - ..:/root/.openclaw/workspace:ro
+      - ${OPENCLAW_HOME:-/root/.openclaw}/agents/main/sessions:/root/.openclaw/agents/main/sessions:ro
+      # Memoria OpenClaw di Owner in SOLA LETTURA per gli Architect V2 (task C1,
+      # progetto fix-approvazioni 2026-08-24): MEMORY.md + memory/*.md veri.
+      # Senza questo mount il container vedrebbe solo la repo (montata sopra) e
+      # memoryAvailable() tornerebbe false. Read-only a livello di mount: anche
+      # un bug nel codice non puo' scrivere la memoria.
+      - ${OPENCLAW_HOME:-/root/.openclaw}/workspace/memory:/root/.openclaw/workspace/memory:ro
+      - ${OPENCLAW_HOME:-/root/.openclaw}/workspace/MEMORY.md:/root/.openclaw/workspace/MEMORY.md:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Etichetta per l'auto-restart on-unhealthy via sidecar autoheal (vedi sotto).
+    labels:
+      - autoheal=true
+    healthcheck:
+      # Il container ha solo `node` (no curl/wget): probe HTTP fatto con node.
+      # Qualsiasi risposta < 500 = piattaforma viva ed event-loop reattivo;
+      # timeout/errore/hang = unhealthy.
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3100/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    # Tetto memoria host confermato (.HostConfig.Memory = 1536 MB, 2026-07-27).
+    # DEVE restare allineato a AGENT_PLATFORM_MEM_LIMIT_MB sopra.
+    mem_limit: 1536m
+
+  # Sidecar opzionale ma CONSIGLIATO: nel Docker "vanilla" la restart-policy
+  # riavvia solo sull'USCITA del processo, NON quando l'healthcheck è unhealthy
+  # (processo vivo ma bloccato). autoheal colma il buco: riavvia i container
+  # marcati `autoheal=true` quando diventano unhealthy. Vedi docs/deploy.md.
+  autoheal:
+    image: willfarrell/autoheal:latest   # PLACEHOLDER — pinna un tag/digest in produzione
+    container_name: agent-platform-autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "10"        # secondi tra i check dello stato health
+      AUTOHEAL_START_PERIOD: "40"    # grazia iniziale, allineata a start_period
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

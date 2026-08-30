@@ -1,0 +1,77 @@
+{
+  "_comment": "Annotated OpenClaw config template. Copy to ~/.openclaw/openclaw.json and fill placeholders. NEVER overwrite an existing config wholesale: merge sections. Keys marked FILL_ME are yours to provide.",
+
+  "auth": {
+    "_comment": "Two DISTINCT auth systems. (A) cliBackends claude-cli below = your Claude SUBSCRIPTION, flat cost. (B) auth.profiles api_key = Messages API = pay per token. Keep heavy load on (A).",
+    "profiles": {
+      "anthropic:default": {
+        "provider": "anthropic",
+        "mode": "api_key",
+        "_comment": "OPTIONAL safety net for fallback models on the API path. Costs real money per token. Set via `openclaw auth` or leave out entirely."
+      }
+    },
+    "order": {
+      "anthropic": ["anthropic:default"]
+    }
+  },
+
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-opus-5",
+        "fallbacks": [
+          "anthropic/claude-sonnet-5",
+          "anthropic/claude-haiku-4-5"
+        ]
+      },
+      "models": {
+        "anthropic/claude-opus-5": {
+          "alias": "opus",
+          "agentRuntime": { "id": "claude-cli" },
+          "_comment": "agentRuntime.id=claude-cli is MANDATORY for every model that must run on the subscription. Without it the model silently falls back to the Messages API and burns API credits."
+        },
+        "anthropic/claude-sonnet-5": {
+          "alias": "sonnet",
+          "agentRuntime": { "id": "claude-cli" }
+        },
+        "anthropic/claude-haiku-4-5": {
+          "alias": "haiku"
+        }
+      },
+      "cliBackends": {
+        "claude-cli": {
+          "command": "FILL_ME_absolute_path_to_claude_binary (e.g. /home/node/.local/bin/claude)",
+          "env": {
+            "CLAUDE_CODE_OAUTH_TOKEN": "FILL_ME_run_scripts/setup-claude-subscription.sh"
+          },
+          "reliability": {
+            "watchdog": {
+              "fresh":  { "noOutputTimeoutMs": 1500000 },
+              "resume": { "noOutputTimeoutMs": 1500000 }
+            }
+          }
+        }
+      },
+      "workspace": "/home/node/.openclaw/workspace",
+      "thinkingDefault": "high",
+      "timeoutSeconds": 3600,
+      "heartbeat": { "every": "0m" },
+      "maxConcurrent": 4,
+      "subagents": { "maxConcurrent": 8, "archiveAfterMinutes": 60 }
+    }
+  },
+
+  "tools": {
+    "profile": "coding",
+    "web": {
+      "search": {
+        "enabled": false,
+        "_comment": "Enable and pick a provider (e.g. tavily) once you add its API key via `openclaw auth`."
+      }
+    }
+  },
+
+  "channels": {
+    "_comment": "Configure your channel (telegram bot token etc.) via `openclaw onboard` or the docs; not hardcoded here on purpose."
+  }
+}
