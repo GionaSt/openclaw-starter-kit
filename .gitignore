@@ -5,3 +5,4 @@ dist/
 *.sqlite
 *.bak*
 tools/anon-blacklist.local
+__pycache__/
