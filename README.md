@@ -31,6 +31,9 @@ cp -r workspace-template/* ~/.openclaw/workspace/
 
 # 4. Start chatting (Telegram or any channel you configured), then let the
 #    assistant run its own BOOTSTRAP.md to pick a name and personality.
+
+# 5. (recommended, as root on the host) nightly backup of everything to Google Drive
+sudo bash tools/backup-global/install-host.sh --apply --run-now   # see docs/05
 ```
 
 Then read the docs, in order:
@@ -41,6 +44,7 @@ Then read the docs, in order:
 | [docs/02-claude-subscription.md](docs/02-claude-subscription.md) | The subscription bridge, in depth (footguns included) |
 | [docs/03-workspace-framework.md](docs/03-workspace-framework.md) | The reasoning framework and how to customize it |
 | [docs/04-memory-system.md](docs/04-memory-system.md) | The LLM Wiki memory pattern |
+| [docs/05-backup-google-drive.md](docs/05-backup-google-drive.md) | Nightly encrypted backup of the whole VPS to Google Drive, one-command restore |
 | [agent-platform/INSTALL.md](agent-platform/INSTALL.md) | Agent Platform V2 setup |
 
 ## What you need
@@ -68,6 +72,7 @@ workspace-template/    the assistant's home: framework, memory system, skills
 agent-platform/        Agent Platform V2 (server + web UI), anonymized
 docs/                  the manuals
 tools/                 anon-check.sh (secret/PII gate for contributors)
+tools/backup-global/   nightly restic backup to Google Drive + restore (host scripts)
 ```
 
 ## License / distribution
